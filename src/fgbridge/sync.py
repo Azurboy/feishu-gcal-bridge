@@ -85,6 +85,8 @@ def _remote_mapping(key: str, remote: RemoteEvent) -> Mapping:
         datetime.fromisoformat(props["fgbridge_end"])
     except (TypeError, ValueError) as exc:
         raise ValueError("mirror_mapping_invalid") from exc
+    if generation < 0 or remote.id != event_id(props["fgbridge_install"], key, generation):
+        raise ValueError("mirror_identity_invalid")
     return Mapping(
         key=key, series_key=props["fgbridge_series"], google_id=remote.id,
         generation=generation, last_start=props["fgbridge_start"],
@@ -117,8 +119,13 @@ class Reconciler:
 
     def _delete_remote(self, key: str, remote: RemoteEvent | None, mapping: Mapping) -> None:
         if remote is None:
-            self.state.delete_mapping(key)
-            return
+            status, fetched = self.google.get(self.calendar_id, mapping.google_id)
+            if status != "exists" or fetched is None:
+                self.state.delete_mapping(key)
+                return
+            if not _owned(fetched, self.install_id, key):
+                raise GoogleError("mirror_identity_lost")
+            remote = RemoteEvent(mapping.google_id, fetched)
         if _unsafe_remote(remote.data):
             raise GoogleError("mirror_has_external_participants")
         self.state.intent(key, "delete", remote.id, mapping.generation)
@@ -230,8 +237,8 @@ class Reconciler:
                     continue
                 if item.data.get("summary") == "Busy":
                     continue
-                result.updated += 1
                 if dry_run:
+                    result.updated += 1
                     continue
                 if _unsafe_remote(item.data):
                     result.errors.append("mirror_has_external_participants")
@@ -245,6 +252,7 @@ class Reconciler:
                         raise GoogleError("privacy_downgrade_readback_mismatch")
                     self.state.clear_intent(key)
                     remote[key] = RemoteEvent(item.id, checked)
+                    result.updated += 1
                 except GoogleError as exc:
                     result.errors.append(exc.code)
             if not dry_run and not result.errors:
@@ -267,13 +275,14 @@ class Reconciler:
                 previous = local.get(key)
                 on_google = remote.get(key)
                 if on_google is None:
-                    result.created += 1
                     if dry_run:
+                        result.created += 1
                         continue
                     new_mapping = self._insert_or_recover(event, previous)
                     self.state.put_mapping(new_mapping)
                     self.state.clear_intent(key)
                     local[key] = new_mapping
+                    result.created += 1
                 else:
                     prior = local[key]
                     body = event.google_body(self.install_id, prior.generation)
@@ -282,9 +291,8 @@ class Reconciler:
                         current_props.get(k) != v for k, v in body["extendedProperties"]["private"].items()
                     )
                     if will_update:
-                        result.updated += 1
-                        if not dry_run:
-                            self._update_remote(event, on_google, prior)
+                        if dry_run or self._update_remote(event, on_google, prior):
+                            result.updated += 1
                     if not dry_run:
                         self.state.put_mapping(Mapping(
                             key, event.series_key, prior.google_id, prior.generation,
@@ -305,10 +313,12 @@ class Reconciler:
                 explicit_cancel = key in snapshot.cancelled_keys or mapping.series_key in snapshot.cancelled_series
                 misses = mapping.misses + 1
                 if explicit_cancel or (confirm_empty and sudden_empty) or misses >= 2:
-                    result.deleted += 1
-                    if not dry_run:
+                    if dry_run:
+                        result.deleted += 1
+                    else:
                         try:
                             self._delete_remote(key, remote.get(key), mapping)
+                            result.deleted += 1
                         except (GoogleError, KeyError) as exc:
                             result.errors.append(exc.code if isinstance(exc, GoogleError) else "mirror_delete_failed")
                 else:

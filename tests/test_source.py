@@ -67,6 +67,8 @@ def test_partial_report_status_rejected():
     </d:multistatus>'''
     with pytest.raises(SourceError, match="partial_caldav_multistatus"):
         _check_multistatus(response, report=True)
+    with pytest.raises(SourceError, match="partial_caldav_multistatus"):
+        _check_multistatus(response, report=False)
 
 
 def test_cross_host_resource_rejected(monkeypatch):
@@ -80,3 +82,48 @@ def test_cross_host_resource_rejected(monkeypatch):
     monkeypatch.setattr(module, "DAVCalendar", Calendar)
     result = fake_source().scan(CAL, "Asia/Shanghai", START, END, "full")
     assert not result.complete and result.errors == ["caldav_cross_host_url_rejected"]
+
+
+def test_feishu_calendars_fallback_discovers_collection(monkeypatch):
+    xml = b'''<d:multistatus xmlns:d="DAV:">
+      <d:response><d:href>/calendars/</d:href></d:response>
+      <d:response><d:href>/calendars/abc-123/</d:href></d:response>
+      <d:response><d:href>https://evil.example/calendars/abc/</d:href></d:response>
+    </d:multistatus>'''
+
+    class Calendar:
+        def __init__(self, client, url):
+            self.url = url
+
+        def get_display_name(self):
+            return "Work"
+
+    class Client:
+        def principal(self):
+            raise ValueError("no discovery")
+
+        def request(self, url, **kwargs):
+            return SimpleNamespace(status=207, raw=xml)
+
+    source = fake_source()
+    source.client = Client()
+    monkeypatch.setattr(module, "DAVCalendar", Calendar)
+    with pytest.raises(SourceError, match="caldav_cross_host_url_rejected"):
+        source.calendars()
+    source.client.request = lambda url, **kwargs: SimpleNamespace(
+        status=207, raw=xml.replace(b'<d:response><d:href>https://evil.example/calendars/abc/</d:href></d:response>', b'')
+    )
+    assert source.calendars() == [("Work", CAL.replace("synthetic", "abc-123"))]
+
+
+def test_timezone_property_used_before_prompt(monkeypatch):
+    class Calendar:
+        def __init__(self, client, url):
+            pass
+
+        def get_properties(self, properties):
+            assert properties[0].__class__.__name__ == "CalendarTimeZone"
+            return {"tz": "BEGIN:VTIMEZONE\nTZID:Asia/Shanghai\nEND:VTIMEZONE"}
+
+    monkeypatch.setattr(module, "DAVCalendar", Calendar)
+    assert fake_source().timezone(CAL) == "Asia/Shanghai"

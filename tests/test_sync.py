@@ -183,3 +183,15 @@ def test_attendees_prevent_mutation_and_dry_run_does_not_advance(harness):
     result = sync.run(snapshot(a))
     assert result.status == "partial"
     assert remote_b["id"] in google.items
+
+
+def test_forged_marker_with_wrong_event_id_is_not_managed(harness):
+    state, google, sync, now = harness
+    a = event("A", now)
+    forged = a.google_body("install", 0)
+    forged["id"] = "manually-created-event"
+    forged["etag"] = "1"
+    google.items[forged["id"]] = forged
+    with pytest.raises(ValueError, match="mirror_identity_invalid"):
+        sync.run(snapshot(a))
+    assert google.writes == 0

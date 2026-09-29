@@ -12,6 +12,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -48,7 +49,7 @@ def _installed_client(path: Path) -> None:
         raise ValueError("google_client_json_must_be_outside_repository")
 
 
-def setup() -> int:
+def _setup_locked() -> int:
     private_dir(home())
     try:
         previous = load_config()
@@ -142,11 +143,19 @@ def setup() -> int:
         finally:
             state.close()
     print("飞书读取与 Google 授权完成；开始首次同步。")
-    return sync_once(dry_run=False, confirm_empty=False)
+    return 0
 
 
-def sync_once(*, dry_run: bool, confirm_empty: bool) -> int:
+def setup() -> int:
     with process_lock():
+        result = _setup_locked()
+        if result:
+            return result
+        return sync_once(dry_run=False, confirm_empty=False, already_locked=True)
+
+
+def sync_once(*, dry_run: bool, confirm_empty: bool, already_locked: bool = False) -> int:
+    with nullcontext() if already_locked else process_lock():
         config = load_config()
         secret = load_secrets()
         state = State()
@@ -208,7 +217,10 @@ def status() -> int:
         base_status = state.get("status") or "error"
         if last:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(last)
-            current = "stale" if age.total_seconds() > 600 else base_status
+            current = (
+                f"stale ({base_status})" if age.total_seconds() > 600
+                else base_status
+            )
         else:
             current = "尚未完成首次同步" if base_status != "needs_auth" else "needs_auth"
         print(f"状态：{current}")

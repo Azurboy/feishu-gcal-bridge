@@ -19,7 +19,10 @@ import tomli_w
 def home() -> Path:
     override = os.environ.get("FGBRIDGE_HOME")
     if override:
-        return Path(override).expanduser().resolve()
+        path = Path(override).expanduser().resolve()
+        if path.is_relative_to(Path(__file__).resolve().parents[2]):
+            raise ValueError("Data directory must be outside the source repository")
+        return path
     return Path.home() / "Library" / "Application Support" / "fgbridge"
 
 

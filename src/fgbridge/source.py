@@ -10,6 +10,7 @@ from urllib.parse import urljoin, urlsplit
 from caldav import Calendar as DAVCalendar
 from caldav import DAVClient
 from caldav.elements import cdav
+from caldav.lib.error import AuthorizationError, NotFoundError, RateLimitError
 from icalendar import Calendar
 
 from .events import Snapshot, parse_resource
@@ -40,6 +41,10 @@ def _check_multistatus(raw: bytes | str, *, report: bool) -> None:
     if root.tag != "{DAV:}multistatus":
         raise SourceError("unexpected_caldav_response")
     if not report:
+        for item in root.findall("{DAV:}response"):
+            status = item.findtext("{DAV:}status")
+            if status and not re.search(r"\s2\d\d(?:\s|$)", status):
+                raise SourceError("partial_caldav_multistatus")
         return
     for item in root.findall("{DAV:}response"):
         statuses = [x.text or "" for x in item.findall("{DAV:}status")]
@@ -89,11 +94,22 @@ class FeishuSource:
             pass
         if not found:
             collection = urljoin(self.base_url, "/calendars/")
-            response = self.client.request(
-                collection, method="PROPFIND",
-                body="""<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>""",
-                headers={"Depth": "1", "Content-Type": "application/xml"},
-            )
+            try:
+                response = self.client.request(
+                    collection, method="PROPFIND",
+                    body="""<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>""",
+                    headers={"Depth": "1", "Content-Type": "application/xml"},
+                )
+            except AuthorizationError as exc:
+                raise SourceError("caldav_authorization_failed") from exc
+            except NotFoundError as exc:
+                raise SourceError("caldav_calendar_not_found") from exc
+            except RateLimitError as exc:
+                raise SourceError("caldav_rate_limited") from exc
+            except SourceError:
+                raise
+            except Exception as exc:
+                raise SourceError("caldav_discovery_failed") from exc
             if response.status != 207:
                 raise SourceError("caldav_calendar_list_unavailable")
             _check_multistatus(response.raw, report=False)
@@ -125,7 +141,7 @@ class FeishuSource:
     def timezone(self, calendar_url: str) -> str | None:
         calendar = DAVCalendar(client=self.client, url=_same_host(self.base_url, calendar_url))
         try:
-            properties = calendar.get_properties([cdav.CalendarTimezone()])
+            properties = calendar.get_properties([cdav.CalendarTimeZone()])
             text = "\n".join(str(value) for value in properties.values())
             match = re.search(r"(?m)^TZID:([^\r\n]+)", text)
             if match:
@@ -196,13 +212,14 @@ class FeishuSource:
                 raise SourceError("source_instance_limit")
         except Exception as exc:
             snapshot.complete = False
-            name = exc.__class__.__name__
             if isinstance(exc, SourceError):
                 snapshot.errors.append(str(exc))
-            elif name == "AuthorizationError":
+            elif isinstance(exc, AuthorizationError):
                 snapshot.errors.append("caldav_authorization_failed")
-            elif name == "NotFoundError":
+            elif isinstance(exc, NotFoundError):
                 snapshot.errors.append("caldav_calendar_not_found")
+            elif isinstance(exc, RateLimitError):
+                snapshot.errors.append("caldav_rate_limited")
             else:
                 snapshot.errors.append("caldav_read_failed")
         return snapshot

@@ -10,6 +10,8 @@ build/
 client_secret*.json
 token.json
 secrets.json
+config.toml
 state.sqlite3*
+sync.lock
+launchd*.log
 *.ics
-
