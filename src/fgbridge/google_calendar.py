@@ -182,6 +182,22 @@ class GoogleCalendar:
                 return "tombstone", None
             raise
 
+    def tombstone_exists(self, calendar_id: str, google_id: str) -> bool:
+        page: str | None = None
+        while True:
+            response = self._execute(
+                self.service.events().list(
+                    calendarId=calendar_id, maxResults=2500, pageToken=page,
+                    showDeleted=True, singleEvents=False,
+                )
+            )
+            for item in response.get("items", []):
+                if item.get("id") == google_id:
+                    return item.get("status") == "cancelled"
+            page = response.get("nextPageToken")
+            if not page:
+                return False
+
     def insert(self, calendar_id: str, body: dict[str, Any], google_id: str) -> dict[str, Any]:
         return self._execute(
             self.service.events().insert(

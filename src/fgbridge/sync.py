@@ -202,7 +202,23 @@ class Reconciler:
                 self.google.insert(self.calendar_id, body, google_id)
             except GoogleError as exc:
                 if exc.status == 409:
-                    continue
+                    conflict_status, conflict_event = self.google.get(self.calendar_id, google_id)
+                    if conflict_status == "exists":
+                        if conflict_event is None or not _owned(
+                            conflict_event, self.install_id, event.key
+                        ):
+                            raise GoogleError("google_event_id_collision") from exc
+                        continue
+                    if conflict_status == "tombstone" or self.google.tombstone_exists(
+                        self.calendar_id, google_id
+                    ):
+                        generation += 1
+                        self.state.intent(
+                            event.key, "insert",
+                            event_id(self.install_id, event.key, generation), generation,
+                        )
+                        continue
+                    raise GoogleError("google_event_id_conflict_unresolved") from exc
                 raise
             read_status, readback = self.google.get(self.calendar_id, google_id)
             if read_status != "exists" or readback is None or not _owned(readback, self.install_id, event.key):

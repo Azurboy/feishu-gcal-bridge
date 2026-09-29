@@ -18,6 +18,9 @@ class FakeGoogle:
         self.writes = 0
         self.fail_next_readback = False
         self.fail_after_insert = False
+        self.tombstone_get_missing = False
+        self.patch_conflict_once = False
+        self.delete_conflict_once = False
 
     def assert_calendar(self, calendar_id, install_id):
         assert calendar_id == "owned" and install_id == "install"
@@ -35,7 +38,13 @@ class FakeGoogle:
             raise GoogleError("network_after_write")
         if google_id in self.items:
             return "exists", deepcopy(self.items[google_id])
-        return ("tombstone" if google_id in self.tombstones else "missing"), None
+        return (
+            "tombstone" if google_id in self.tombstones and not self.tombstone_get_missing
+            else "missing"
+        ), None
+
+    def tombstone_exists(self, calendar_id, google_id):
+        return google_id in self.tombstones
 
     def insert(self, calendar_id, body, google_id):
         self.writes += 1
@@ -49,6 +58,10 @@ class FakeGoogle:
     def patch(self, calendar_id, google_id, body, etag):
         self.writes += 1
         item = self.items[google_id]
+        if self.patch_conflict_once:
+            self.patch_conflict_once = False
+            item["etag"] = str(int(item["etag"]) + 1)
+            raise GoogleError("google_http_412", 412)
         if item["etag"] != etag:
             raise GoogleError("google_http_412", 412)
         self.items[google_id] = {**item, **deepcopy(body), "etag": str(int(etag) + 1)}
@@ -57,6 +70,10 @@ class FakeGoogle:
         self.writes += 1
         if google_id not in self.items:
             raise GoogleError("google_http_404", 404)
+        if self.delete_conflict_once:
+            self.delete_conflict_once = False
+            self.items[google_id]["etag"] = str(int(self.items[google_id]["etag"]) + 1)
+            raise GoogleError("google_http_412", 412)
         if self.items[google_id]["etag"] != etag:
             raise GoogleError("google_http_412", 412)
         del self.items[google_id]
@@ -156,6 +173,18 @@ def test_manual_delete_recreates_with_new_generation(harness):
     assert state.mappings()[a.key].generation == 1
 
 
+def test_hidden_tombstone_409_recreates_after_confirmation(harness):
+    state, google, sync, now = harness
+    a = event("A", now)
+    sync.run(snapshot(a))
+    old_id = next(iter(google.items))
+    del google.items[old_id]
+    google.tombstones.add(old_id)
+    google.tombstone_get_missing = True
+    assert sync.run(snapshot(a)).created == 1
+    assert state.mappings()[a.key].generation == 1
+
+
 def test_private_downgrade_scrubs_historical_copies(harness):
     state, google, sync, now = harness
     old = event("Private history", now - timedelta(days=20))
@@ -195,3 +224,17 @@ def test_forged_marker_with_wrong_event_id_is_not_managed(harness):
     with pytest.raises(ValueError, match="mirror_identity_invalid"):
         sync.run(snapshot(a))
     assert google.writes == 0
+
+
+def test_etag_conflicts_refetch_and_retry_once(harness):
+    state, google, sync, now = harness
+    a, b = event("A", now), event("B", now, "b")
+    sync.run(snapshot(a, b))
+    google.patch_conflict_once = True
+    renamed = event("A renamed", now)
+    assert sync.run(snapshot(renamed, b)).updated == 1
+    assert all(item["summary"] != "A" for item in google.items.values())
+    google.delete_conflict_once = True
+    assert sync.run(snapshot(renamed)).pending_delete == 1
+    assert sync.run(snapshot(renamed)).deleted == 1
+    assert len(google.items) == 1
