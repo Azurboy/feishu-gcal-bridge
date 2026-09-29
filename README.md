@@ -6,7 +6,7 @@ One-way Feishu CalDAV → personal Google Calendar sync.
 
 飞书是日程来源，Google 中的 `Feishu` 日历是副本。工具在 Mac 上每 120 秒读取一次飞书，并用 Google Calendar API 更新副本；电脑休眠或关机会暂停。用户已验证自己的 agent 能读取 Google 附加日历，工具本身只负责日历同步。
 
-**当前状态：开发预览版。** 已有本地合成日程和模拟 Google API 测试；飞书真实账号、个人 Gmail OAuth、Mac launchd 以及连续 8 天运行尚待实际验收。因此以下时效是设计目标，尚非实测结果。
+**当前状态：开发预览版。** 2026-09-29 已用一个真实飞书账号和个人 Gmail 完成首次仅读忙闲同步：飞书窗口内 26 个实例写入 Google 专用附加日历，API 读回 26 个；Mac `launchd` 已安装。通过飞书用户 API 创建、改期、删除一条无参会人的测试日程，并从 Google API 验证新增、原 ID 更新、两轮缺失后删除。飞书 UI 操作时效测量和连续 8 天运行仍待验收，因此以下时效是设计目标，尚非实测结果。
 
 ## 能做什么
 
@@ -24,7 +24,7 @@ One-way Feishu CalDAV → personal Google Calendar sync.
 2. **个人 Google 账号：** 在自己的 Google Cloud 项目启用 Calendar API，配置 OAuth 同意屏幕，创建 **Desktop app** 类型 OAuth client，下载 JSON 并放在本仓库以外。此工具仅申请 `calendar.app.created`，用于创建和管理其附加日历。[Google 桌面 OAuth](https://developers.google.com/identity/protocols/oauth2/native-app) · [Calendar 权限](https://developers.google.com/workspace/calendar/api/auth)
 3. **Mac：** Python 3.12+。下例使用 [uv](https://docs.astral.sh/uv/)；也可用 `python3 -m venv` 与 `pip install -e .`。
 
-Google OAuth 同意屏幕若保持 External / Testing，带日历权限的 refresh token 通常 7 天到期；长期自用需要按 Google 当前政策处理发布状态，Production 不等于审核通过或永久有效。[Google token 生命周期](https://developers.google.com/identity/protocols/oauth2)
+Google OAuth 同意屏幕若保持 External / Testing，带日历权限的 refresh token 通常 7 天到期；当前真实账号仍处于 Testing。长期自用需要按 Google 当前政策处理发布状态，Production 不等于审核通过或永久有效。[Google token 生命周期](https://developers.google.com/identity/protocols/oauth2)
 
 ## 安装和第一次同步
 
@@ -37,7 +37,7 @@ uv run fgbridge setup
 
 `setup` 会让你输入飞书 CalDAV 地址、用户名和隐藏输入的密码，发现并选择一个日历；若源时区无法自动取得，会要求输入 IANA 时区。随后输入 Google Desktop client JSON 的绝对路径，在浏览器授权个人 Google 账号。首次成功设置会创建一个专用 `Feishu` 附加日历并立即同步。再次运行同一绑定不会另建日历。
 
-建议先在飞书创建不含工作信息的测试日程，确认 Google 中的副本。需要导出标题时，先用飞书 UI 创建一个私密测试日程，使 `setup` 能确认源中存在 `CLASS:PRIVATE/CONFIDENTIAL` 标记；否则工具只能运行仅忙闲模式。此检查仍须在真实飞书账号验收后才能视为兼容性保证。
+建议先在飞书创建不含工作信息的测试日程，确认 Google 中的副本。需要导出标题时，先用飞书 UI 创建一个私密测试日程，使 `setup` 能确认源中存在 `CLASS:PRIVATE/CONFIDENTIAL` 标记；否则工具只能运行仅忙闲模式。当前实测源没有出现私密标记，因此标题模式仍未获真实账号验收。
 
 ```sh
 uv run fgbridge sync --dry-run
@@ -71,6 +71,6 @@ uv sync --locked --extra dev
 uv run --extra dev pytest -q
 ```
 
-合成测试覆盖重复、单次和此后改期、取消、全天、夏令时、私密降级、部分读取失败、连续缺失、崩溃恢复与丢失 SQLite 后恢复。**尚未完成**个人 Gmail 最小权限调用、飞书 UI 实际样本比对、20 次时效测量与连续 8 天运行。未完成这些验收前，请把本仓库视作可审查的开发预览，而非已验证的日常日历同步产品。详细要求见[开发规格](docs/DEVELOPMENT_SPEC_v0.1.md)，逐项进度见[验收状态](docs/ACCEPTANCE_STATUS.md)。
+合成测试覆盖重复、单次和此后改期、取消、全天、夏令时、私密降级、部分读取失败、连续缺失、崩溃恢复与丢失 SQLite 后恢复。真实飞书实测发现其普通查询不返回事件正文，已通过 `PROPFIND` 列举资源并分批 `calendar-multiget` 完整读取；还发现日历解析库会给单次事件补一个随开始时间变化的实例 ID，现以原始 UID 保持改期身份。**尚未完成**飞书 UI 实际样本比对、20 次时效测量与连续 8 天运行。未完成这些验收前，请把本仓库视作可审查的开发预览。详细要求见[开发规格](docs/DEVELOPMENT_SPEC_v0.1.md)，逐项进度见[验收状态](docs/ACCEPTANCE_STATUS.md)。
 
 如果发现飞书兼容问题，请提交操作步骤、预期/实际时间、脱敏错误码和版本；不要上传 token、专用密码、完整 ICS 或真实会议内容。项目采用 [MIT License](LICENSE)。

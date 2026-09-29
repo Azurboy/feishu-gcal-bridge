@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from xml.sax.saxutils import escape
 
 import pytest
 
@@ -127,3 +128,54 @@ def test_timezone_property_used_before_prompt(monkeypatch):
 
     monkeypatch.setattr(module, "DAVCalendar", Calendar)
     assert fake_source().timezone(CAL) == "Asia/Shanghai"
+
+
+def test_multiget_fallback_reads_every_listed_resource(monkeypatch):
+    first = ics("BEGIN:VEVENT\nUID:one\nDTSTART:20260928T090000Z\nDTEND:20260928T100000Z\nEND:VEVENT\n")
+    second = ics("BEGIN:VEVENT\nUID:two\nDTSTART:20260929T090000Z\nDTEND:20260929T100000Z\nEND:VEVENT\n")
+    listing = b'''<d:multistatus xmlns:d="DAV:">
+      <d:response><d:href>/calendars/synthetic/one.ics</d:href><d:propstat><d:prop><d:getetag/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+      <d:response><d:href>/calendars/synthetic/two.ics</d:href><d:propstat><d:prop><d:getetag/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+    </d:multistatus>'''
+    report = (
+        '<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+        + ''.join(
+            '<d:response><d:href>/calendars/synthetic/' + name + '.ics</d:href>'
+            '<d:propstat><d:prop><c:calendar-data>' + escape(data) + '</c:calendar-data></d:prop>'
+            '<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+            for name, data in [('one', first), ('two', second)]
+        ) + '</d:multistatus>'
+    ).encode()
+
+    class Client:
+        def request(self, _url, *, method, **_kwargs):
+            return SimpleNamespace(status=207, raw=listing if method == "PROPFIND" else report)
+
+    class Calendar:
+        def __init__(self, client, url):
+            pass
+
+        def search(self, **_kwargs):
+            raise SourceError("calendar_query_unavailable")
+
+    source = fake_source()
+    source.client = Client()
+    monkeypatch.setattr(module, "DAVCalendar", Calendar)
+    snapshot = source.scan(CAL, "Asia/Shanghai", START, END, "busy")
+    assert snapshot.complete and len(snapshot.instances) == 2
+
+
+def test_multiget_missing_resource_is_incomplete():
+    listing = b'''<d:multistatus xmlns:d="DAV:">
+      <d:response><d:href>/calendars/synthetic/one.ics</d:href><d:status>HTTP/1.1 200 OK</d:status></d:response>
+    </d:multistatus>'''
+    report = b'<d:multistatus xmlns:d="DAV:"/>'
+
+    class Client:
+        def request(self, _url, *, method, **_kwargs):
+            return SimpleNamespace(status=207, raw=listing if method == "PROPFIND" else report)
+
+    source = fake_source()
+    source.client = Client()
+    with pytest.raises(SourceError, match="partial_caldav_multistatus"):
+        source._multiget_resources(CAL)

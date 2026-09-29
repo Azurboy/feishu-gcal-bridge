@@ -81,9 +81,12 @@ def _setup_locked() -> int:
     private_dir(home())
     try:
         previous = load_config()
+    except FileNotFoundError:
+        previous = {}
+    try:
         existing_secrets = load_secrets()
     except FileNotFoundError:
-        previous, existing_secrets = {}, {}
+        existing_secrets = {}
 
     base_url = _ask("飞书 CalDAV 地址", previous.get("caldav_url", "https://caldav.feishu.cn/"))
     username = _ask("飞书 CalDAV 用户名", existing_secrets.get("username"))

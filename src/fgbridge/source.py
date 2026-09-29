@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from types import SimpleNamespace
 from urllib.parse import urljoin, urlsplit
+from xml.sax.saxutils import escape
 
 from caldav import Calendar as DAVCalendar
 from caldav import DAVClient
@@ -150,6 +152,73 @@ class FeishuSource:
             pass
         return None
 
+    def _multiget_resources(self, calendar_url: str) -> list[SimpleNamespace]:
+        listing = self.client.request(
+            calendar_url, method="PROPFIND",
+            body='<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>',
+            headers={"Depth": "1", "Content-Type": "application/xml"},
+        )
+        if listing.status != 207:
+            raise SourceError("caldav_calendar_list_unavailable")
+        root = ET.fromstring(listing.raw)
+        requested: dict[str, str] = {}
+        for item in root.findall("{DAV:}response"):
+            href = item.findtext("{DAV:}href")
+            if not href:
+                raise SourceError("partial_caldav_multistatus")
+            url = _same_host(self.base_url, urljoin(calendar_url, href))
+            if not urlsplit(url).path.startswith(urlsplit(calendar_url).path):
+                raise SourceError("caldav_resource_outside_calendar")
+            if not urlsplit(url).path.lower().endswith(".ics"):
+                continue
+            statuses = [item.findtext("{DAV:}status")]
+            statuses += [p.findtext("{DAV:}status") for p in item.findall("{DAV:}propstat")]
+            if not any(statuses) or any(
+                status and not re.search(r"\s2\d\d(?:\s|$)", status) for status in statuses
+            ):
+                raise SourceError("partial_caldav_multistatus")
+            if url in requested:
+                raise SourceError("duplicate_caldav_resource")
+            requested[url] = href
+        if len(requested) > 10_000:
+            raise SourceError("source_resource_limit")
+        output: list[SimpleNamespace] = []
+        urls = list(requested)
+        for offset in range(0, len(urls), 50):
+            batch = urls[offset:offset + 50]
+            hrefs = "".join(f"<d:href>{escape(requested[url])}</d:href>" for url in batch)
+            body = (
+                '<c:calendar-multiget xmlns:d="DAV:" '
+                'xmlns:c="urn:ietf:params:xml:ns:caldav">'
+                '<d:prop><d:getetag/><c:calendar-data/></d:prop>'
+                f"{hrefs}</c:calendar-multiget>"
+            )
+            response = self.client.request(
+                calendar_url, method="REPORT", body=body,
+                headers={"Depth": "1", "Content-Type": "application/xml"},
+            )
+            if response.status != 207:
+                raise SourceError("caldav_multiget_unavailable")
+            result = ET.fromstring(response.raw)
+            received: set[str] = set()
+            for item in result.findall("{DAV:}response"):
+                href = item.findtext("{DAV:}href")
+                if not href:
+                    raise SourceError("partial_caldav_multistatus")
+                url = _same_host(self.base_url, urljoin(calendar_url, href))
+                if url not in batch or url in received:
+                    raise SourceError("unexpected_caldav_resource")
+                received.add(url)
+                data = item.findtext(
+                    "{DAV:}propstat/{DAV:}prop/{urn:ietf:params:xml:ns:caldav}calendar-data"
+                )
+                if not data:
+                    raise SourceError("missing_calendar_data")
+                output.append(SimpleNamespace(url=url, data=data))
+            if received != set(batch):
+                raise SourceError("partial_caldav_multistatus")
+        return output
+
     def scan(
         self,
         calendar_url: str,
@@ -167,8 +236,8 @@ class FeishuSource:
                     start=start, end=end, event=True, expand=False, split_expanded=False
                 )
             except Exception:
-                # Older Feishu installations may fail REPORT but allow collection/GET.
-                objects = calendar.events()
+                # Feishu can reject calendar-query data but serve calendar-multiget.
+                objects = self._multiget_resources(calendar_url)
             if len(objects) > 10_000:
                 raise SourceError("source_resource_limit")
             grouped: dict[str, list] = {}

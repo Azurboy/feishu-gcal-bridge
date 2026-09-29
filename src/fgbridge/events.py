@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -140,6 +141,15 @@ def parse_resource(
         components = list(calendar.walk("VEVENT"))
         if not components:
             raise EventError("missing_vevent")
+        # recurring_ical_events synthesizes RECURRENCE-ID=DTSTART even for a
+        # plain VEVENT. Its moving start must not become the event identity.
+        uid_counts = Counter(str(component.get("UID", "")) for component in components)
+        single_uids = {
+            str(component.get("UID", ""))
+            for component in components
+            if uid_counts[str(component.get("UID", ""))] == 1
+            and not any(field in component for field in ("RECURRENCE-ID", "RRULE", "RDATE", "EXDATE"))
+        }
         range_shifts: dict[tuple[str, str], timedelta] = {}
         for component in components:
             uid = str(component.get("UID", ""))
@@ -196,7 +206,9 @@ def parse_resource(
                 continue
             rid_component = component.get("RECURRENCE-ID")
             has_recurrence = "RRULE" in component or "RDATE" in component or "EXDATE" in component
-            if rid_component is not None:
+            if uid in single_uids:
+                rid = "single"
+            elif rid_component is not None:
                 original_rid = _decoded(component, "RECURRENCE-ID")
                 rid = _identity(original_rid, zone)
                 if str(rid_component.params.get("RANGE", "")).upper() == "THISANDFUTURE":

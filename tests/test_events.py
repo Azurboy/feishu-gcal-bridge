@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fgbridge.events import parse_resource
+from fgbridge.events import opaque_key, parse_resource
 
 
 START = datetime(2026, 9, 25, tzinfo=timezone.utc)
@@ -56,6 +56,22 @@ END:VEVENT
     assert len(after.cancelled_keys) == 1
     assert set(after.instances) <= set(before.instances)
     assert next(x for x in after.instances.values() if x.summary == "Moved").start["dateTime"].endswith("19:00:00+08:00")
+
+
+def test_plain_event_reschedule_keeps_uid_identity() -> None:
+    def body(start: str, end: str) -> str:
+        return f"""BEGIN:VEVENT
+UID:plain-1
+DTSTART;TZID=Asia/Shanghai:{start}
+DTEND;TZID=Asia/Shanghai:{end}
+END:VEVENT
+"""
+
+    before = parse(body("20260928T030000", "20260928T031500"))
+    after = parse(body("20260928T033000", "20260928T034500"))
+    assert before.complete and after.complete
+    assert set(before.instances) == set(after.instances) == {opaque_key(CAL, "plain-1", "single")}
+    assert next(iter(after.instances.values())).start["dateTime"].endswith("03:30:00+08:00")
 
 
 def test_all_day_exclusive_end_private_and_busy() -> None:
