@@ -111,6 +111,35 @@ END:VEVENT
     assert starts.count("2026-09-30T19:00:00+08:00") == 1
 
 
+def test_weekly_recurrence_and_event_overlapping_window_start() -> None:
+    weekly = parse(
+        """BEGIN:VEVENT
+UID:weekly
+DTSTART:20260928T090000Z
+DTEND:20260928T100000Z
+RRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=4
+END:VEVENT
+"""
+    )
+    assert weekly.complete and len(weekly.instances) == 4
+    overlapping = parse_resource(
+        """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:cross-midnight
+DTSTART:20260924T230000Z
+DTEND:20260925T020000Z
+END:VEVENT
+END:VCALENDAR
+""",
+        CAL, "Asia/Shanghai", START, END, "full",
+    )
+    assert overlapping.complete and len(overlapping.instances) == 1
+    item = next(iter(overlapping.instances.values()))
+    assert item.start["dateTime"] == "2026-09-25T07:00:00+08:00"
+    assert item.end["dateTime"] == "2026-09-25T10:00:00+08:00"
+
+
 def test_invalid_end_does_not_invent_duration() -> None:
     result = parse("BEGIN:VEVENT\nUID:x\nDTSTART:20260928T090000Z\nEND:VEVENT\n")
     assert not result.complete and result.errors == ["invalid_end"]
