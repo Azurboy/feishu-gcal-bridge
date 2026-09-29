@@ -11,6 +11,7 @@ import plistlib
 import secrets
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -157,6 +158,14 @@ def sync_once(*, dry_run: bool, confirm_empty: bool) -> int:
             snapshot = source.scan(
                 config["calendar_url"], config["time_zone"], start, end, config["mode"]
             )
+            if any(code in snapshot.errors for code in (
+                "caldav_authorization_failed", "caldav_calendar_not_found"
+            )):
+                if not dry_run:
+                    state.set("status", "needs_auth")
+                    state.set("last_error", snapshot.errors[0])
+                print("需要处理：" + snapshot.errors[0], file=sys.stderr)
+                return 2
             google = GoogleCalendar.connect(Path(config["google_client_json"]))
             result = Reconciler(
                 google, state, config["google_calendar_id"], config["installation_id"],
@@ -211,6 +220,12 @@ def status() -> int:
             print(f"距上次完整成功：{int(age.total_seconds() // 60)} 分钟")
         if state.get("last_error"):
             print(f"最近错误码：{state.get('last_error')}")
+        print(
+            "最近一轮增改删："
+            f"{state.get('last_created') or '0'} / "
+            f"{state.get('last_updated') or '0'} / "
+            f"{state.get('last_deleted') or '0'}"
+        )
         print(f"本地数据目录：{home()}")
         return 0
     finally:
@@ -241,7 +256,15 @@ def _launch_agent(action: str) -> int:
         "EnvironmentVariables": {"FGBRIDGE_HOME": str(home())},
     }
     private_dir(home())
-    atomic_private_write(plist_path, plistlib.dumps(payload))
+    descriptor, pending = tempfile.mkstemp(prefix=".fgbridge-", dir=agents)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(plistlib.dumps(payload))
+        os.replace(pending, plist_path)
+    finally:
+        if os.path.exists(pending):
+            os.unlink(pending)
     subprocess.run(["launchctl", "bootout", domain, str(plist_path)], capture_output=True)
     completed = subprocess.run(
         ["launchctl", "bootstrap", domain, str(plist_path)], capture_output=True

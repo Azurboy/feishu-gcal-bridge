@@ -226,6 +226,8 @@ class Reconciler:
         # Privacy downgrade covers historical copies outside the rolling source window.
         if self.mode == "busy" and self.state.get("last_mode") != "busy":
             for key, item in remote.items():
+                if key in snapshot.instances:
+                    continue
                 if item.data.get("summary") == "Busy":
                     continue
                 result.updated += 1
@@ -325,4 +327,7 @@ class Reconciler:
                 self.state.set("last_error", "")
                 self.state.set("last_success", datetime.now(timezone.utc).isoformat())
                 self.state.set("last_mode", self.mode)
+            self.state.set("last_created", str(result.created))
+            self.state.set("last_updated", str(result.updated))
+            self.state.set("last_deleted", str(result.deleted))
         return result

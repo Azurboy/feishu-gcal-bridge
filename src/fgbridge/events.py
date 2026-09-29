@@ -86,7 +86,17 @@ def _decoded(component: Any, name: str) -> date | datetime:
 
 def _aware(value: date | datetime, zone: ZoneInfo) -> datetime:
     if isinstance(value, datetime):
-        return value.replace(tzinfo=zone) if value.tzinfo is None else value
+        if value.tzinfo is not None:
+            return value
+        first = value.replace(tzinfo=zone, fold=0)
+        second = value.replace(tzinfo=zone, fold=1)
+        roundtrip_first = first.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
+        roundtrip_second = second.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
+        if roundtrip_first != value and roundtrip_second != value:
+            raise EventError("nonexistent_floating_time")
+        if first.utcoffset() != second.utcoffset():
+            raise EventError("ambiguous_floating_time")
+        return first
     return datetime(value.year, value.month, value.day, tzinfo=zone)
 
 
@@ -121,6 +131,7 @@ def parse_resource(
     window_start: datetime,
     window_end: datetime,
     mode: str,
+    attendee_email: str | None = None,
 ) -> Snapshot:
     result = Snapshot()
     try:
@@ -129,14 +140,24 @@ def parse_resource(
         components = list(calendar.walk("VEVENT"))
         if not components:
             raise EventError("missing_vevent")
+        range_shifts: dict[tuple[str, str], timedelta] = {}
         for component in components:
             uid = str(component.get("UID", ""))
             if not uid:
                 raise EventError("missing_uid")
             series_key = opaque_key(calendar_id, uid)
             recurrence_id = component.get("RECURRENCE-ID")
-            if recurrence_id and str(recurrence_id.params.get("RANGE", "")).upper() == "THISANDFUTURE":
-                raise EventError("unsupported_thisandfuture")
+            if recurrence_id and recurrence_id.params.get("RANGE"):
+                if str(recurrence_id.params["RANGE"]).upper() != "THISANDFUTURE":
+                    raise EventError("unsupported_recurrence_range")
+                if str(component.get("STATUS", "")).upper() == "CANCELLED":
+                    raise EventError("unsupported_range_cancel")
+                original = _decoded(component, "RECURRENCE-ID")
+                shifted = _decoded(component, "DTSTART")
+                if isinstance(original, datetime) != isinstance(shifted, datetime):
+                    raise EventError("invalid_range_time_type")
+                delta = _aware(shifted, zone) - _aware(original, zone)
+                range_shifts[(uid, _identity(original, zone))] = delta
             status = str(component.get("STATUS", "")).upper()
             if str(component.get("CLASS", "")).upper() in {"PRIVATE", "CONFIDENTIAL"}:
                 result.private_marker_seen = True
@@ -152,6 +173,17 @@ def parse_resource(
         ):
             if str(component.get("STATUS", "")).upper() == "CANCELLED":
                 continue
+            if attendee_email and "@" in attendee_email:
+                attendees = component.get("ATTENDEE", [])
+                if not isinstance(attendees, list):
+                    attendees = [attendees]
+                declined = any(
+                    str(attendee).lower().removeprefix("mailto:") == attendee_email.lower()
+                    and str(attendee.params.get("PARTSTAT", "")).upper() == "DECLINED"
+                    for attendee in attendees
+                )
+                if declined:
+                    continue
             uid = str(component.get("UID", ""))
             if not uid:
                 raise EventError("missing_uid")
@@ -165,7 +197,15 @@ def parse_resource(
             rid_component = component.get("RECURRENCE-ID")
             has_recurrence = "RRULE" in component or "RDATE" in component or "EXDATE" in component
             if rid_component is not None:
-                rid = _identity(_decoded(component, "RECURRENCE-ID"), zone)
+                original_rid = _decoded(component, "RECURRENCE-ID")
+                rid = _identity(original_rid, zone)
+                if str(rid_component.params.get("RANGE", "")).upper() == "THISANDFUTURE":
+                    shift = range_shifts.get((uid, rid))
+                    if shift is None:
+                        raise EventError("unknown_recurrence_range")
+                    # The expansion library repeats the pivot RECURRENCE-ID on every
+                    # future instance, so recover each original slot from its shift.
+                    rid = _identity(start - shift, zone)
             elif has_recurrence:
                 # Defensive: a library version that loses generated IDs must fail closed.
                 raise EventError("missing_recurrence_identity")

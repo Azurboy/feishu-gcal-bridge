@@ -10,6 +10,7 @@ from urllib.parse import urljoin, urlsplit
 from caldav import Calendar as DAVCalendar
 from caldav import DAVClient
 from caldav.elements import cdav
+from icalendar import Calendar
 
 from .events import Snapshot, parse_resource
 
@@ -50,6 +51,7 @@ def _check_multistatus(raw: bytes | str, *, report: bool) -> None:
 class FeishuSource:
     def __init__(self, base_url: str, username: str, password: str) -> None:
         self.base_url = base_url.rstrip("/") + "/"
+        self.username = username
         _host(self.base_url)
         self.client = DAVClient(
             url=self.base_url, username=username, password=password,
@@ -153,6 +155,8 @@ class FeishuSource:
                 objects = calendar.events()
             if len(objects) > 10_000:
                 raise SourceError("source_resource_limit")
+            grouped: dict[str, list] = {}
+            zones: list = []
             for obj in objects:
                 _same_host(self.base_url, str(obj.url))
                 raw = obj.data
@@ -161,7 +165,33 @@ class FeishuSource:
                     raw = obj.data
                 if not raw:
                     raise SourceError("missing_calendar_data")
-                snapshot.absorb(parse_resource(raw, calendar_url, zone_name, start, end, mode))
+                try:
+                    parsed = Calendar.from_ical(raw)
+                    components = list(parsed.walk("VEVENT"))
+                    if not components:
+                        raise ValueError("missing_vevent")
+                    zones.extend(parsed.walk("VTIMEZONE"))
+                    for component in components:
+                        uid = str(component.get("UID", ""))
+                        if not uid:
+                            raise ValueError("missing_uid")
+                        grouped.setdefault(uid, []).append(component)
+                except Exception:
+                    snapshot.complete = False
+                    snapshot.errors.append("calendar_parse_failed")
+            for components in grouped.values():
+                combined = Calendar()
+                combined.add("VERSION", "2.0")
+                for tz in zones:
+                    combined.add_component(tz)
+                for component in components:
+                    combined.add_component(component)
+                snapshot.absorb(
+                    parse_resource(
+                        combined.to_ical(), calendar_url, zone_name, start, end, mode,
+                        attendee_email=self.username,
+                    )
+                )
             if len(snapshot.instances) > 2_000:
                 raise SourceError("source_instance_limit")
         except Exception as exc:
