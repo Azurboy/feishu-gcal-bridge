@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.DS_Store
+.env
+client_secret*.json
+token.json
+secrets.json
+state.sqlite3*
+*.ics
+
