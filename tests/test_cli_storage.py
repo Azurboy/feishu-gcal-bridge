@@ -6,7 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 import fgbridge.cli as cli
-from fgbridge.storage import atomic_private_write, home, load_config, save_config
+from fgbridge.storage import (
+    AlreadyRunning, atomic_private_write, home, load_config, process_lock, save_config,
+)
 
 
 def test_private_configuration_atomic_and_mode(monkeypatch, tmp_path):
@@ -24,6 +26,14 @@ def test_data_directory_cannot_be_inside_source_checkout(monkeypatch):
     monkeypatch.setenv("FGBRIDGE_HOME", str(source_root / "private-data"))
     with pytest.raises(ValueError, match="outside"):
         home()
+
+
+def test_process_lock_rejects_concurrent_sync(monkeypatch, tmp_path):
+    monkeypatch.setenv("FGBRIDGE_HOME", str(tmp_path / "private"))
+    with process_lock():
+        with pytest.raises(AlreadyRunning):
+            with process_lock():
+                pass
 
 
 def test_launchd_uses_locked_absolute_python_and_120_seconds(monkeypatch, tmp_path):

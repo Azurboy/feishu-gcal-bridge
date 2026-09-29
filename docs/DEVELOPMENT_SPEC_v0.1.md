@@ -1,9 +1,9 @@
 # Feishu Calendar Bridge：开发规格 v0.1
 
-**状态：待审批，尚未实现。**  
+**状态：已批准，实施中。本文保留获批时的规格原文；实现进度见[验收状态](./ACCEPTANCE_STATUS.md)。**
 日期：2026-09-29  
 工作名：Feishu Calendar Bridge；仓库名暂定 `feishu-gcal-bridge`，未检查名称占用。  
-配套文档：[社区调研与发布建议](./RESEARCH_AND_LAUNCH.md) · [README 草案](./README_DRAFT.md)
+配套文档：[社区调研与发布建议](./RESEARCH_AND_LAUNCH.md) · [当前 README](../README.md)
 
 ## 1. 决策摘要
 
