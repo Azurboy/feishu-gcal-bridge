@@ -12,10 +12,12 @@ from typing import Any
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
+from google.auth.transport.requests import AuthorizedSession
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from httplib2 import Response
 
 from .storage import atomic_private_write, home
 
@@ -48,13 +50,36 @@ class RemoteEvent:
     data: dict[str, Any]
 
 
+class _RequestsTransport:
+    """Use the same proxy-aware transport as Google OAuth token refresh."""
+
+    def __init__(self, credentials: Credentials, token_path: Path) -> None:
+        self.session = AuthorizedSession(credentials)
+        self.token_path = token_path
+
+    def request(
+        self, uri: str, method: str = "GET", body: Any = None,
+        headers: dict[str, str] | None = None, **_: Any,
+    ) -> tuple[Response, bytes]:
+        previous_token = self.session.credentials.token
+        result = self.session.request(method, uri, data=body, headers=headers, timeout=30)
+        if self.session.credentials.token != previous_token:
+            atomic_private_write(self.token_path, self.session.credentials.to_json().encode())
+        response = Response(dict(result.headers))
+        response.status = result.status_code
+        response.reason = result.reason
+        return response, result.content
+
+
 class GoogleCalendar:
     def __init__(self, credentials: Credentials, token_path: Path) -> None:
         if not credentials.has_scopes([SCOPE]):
             raise GoogleError("google_missing_scope")
         self.credentials = credentials
         self.token_path = token_path
-        self.service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+        self.service = build(
+            "calendar", "v3", http=_RequestsTransport(credentials, token_path), cache_discovery=False
+        )
 
     @classmethod
     def connect(cls, client_json: Path, interactive: bool = False) -> GoogleCalendar:

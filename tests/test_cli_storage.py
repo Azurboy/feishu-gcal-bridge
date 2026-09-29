@@ -56,3 +56,22 @@ def test_launchd_uses_locked_absolute_python_and_120_seconds(monkeypatch, tmp_pa
     assert calls[-1][:2] == ["launchctl", "bootstrap"]
     assert cli._launch_agent("remove") == 0
     assert not path.exists()
+
+
+def test_macos_system_proxy_replaces_stale_local_proxy(monkeypatch):
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError()
+
+    monkeypatch.setattr(cli.socket, "create_connection", unavailable)
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="HTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 17891\n"
+        )
+    )
+    cli._use_macos_system_proxy()
+    assert os.environ["https_proxy"] == "http://127.0.0.1:17891"
+    assert os.environ["HTTPS_PROXY"] == "http://127.0.0.1:17891"

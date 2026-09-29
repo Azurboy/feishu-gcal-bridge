@@ -8,13 +8,16 @@ import json
 import os
 import platform
 import plistlib
+import re
 import secrets
+import socket
 import subprocess
 import sys
 import tempfile
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .google_calendar import GoogleCalendar, GoogleError
@@ -34,6 +37,31 @@ def _ask(label: str, default: str | None = None) -> str:
 
 def _yes(label: str) -> bool:
     return input(f"{label} [y/N]: ").strip().lower() in {"y", "yes"}
+
+
+def _use_macos_system_proxy() -> None:
+    if platform.system() != "Darwin":
+        return
+    configured = os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
+    if configured:
+        parsed = urlsplit(configured)
+        if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return
+        try:
+            with socket.create_connection((parsed.hostname, parsed.port or 80), timeout=0.5):
+                return
+        except OSError:
+            pass
+    result = subprocess.run(["scutil", "--proxy"], capture_output=True, text=True)
+    if result.returncode or not re.search(r"\bHTTPSEnable\s*:\s*1\b", result.stdout):
+        return
+    host = re.search(r"\bHTTPSProxy\s*:\s*(\S+)", result.stdout)
+    port = re.search(r"\bHTTPSPort\s*:\s*(\d+)", result.stdout)
+    if host and port:
+        proxy = f"http://{host.group(1)}:{port.group(1)}"
+        os.environ.update({key: proxy for key in (
+            "https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"
+        )})
 
 
 def _installed_client(path: Path) -> None:
@@ -288,6 +316,7 @@ def _launch_agent(action: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _use_macos_system_proxy()
     parser = argparse.ArgumentParser(prog="fgbridge")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("setup")
