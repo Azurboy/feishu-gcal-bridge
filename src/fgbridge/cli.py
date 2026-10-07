@@ -185,6 +185,18 @@ def setup() -> int:
         return sync_once(dry_run=False, confirm_empty=False, already_locked=True)
 
 
+def reauthorize() -> int:
+    with process_lock():
+        config = load_config()
+        client_json = Path(config["google_client_json"])
+        _installed_client(client_json)
+        GoogleCalendar.reauthorize(
+            client_json, config["google_calendar_id"], config["installation_id"]
+        )
+        print("Google 重新授权完成；开始同步。")
+        return sync_once(dry_run=False, confirm_empty=False, already_locked=True)
+
+
 def sync_once(*, dry_run: bool, confirm_empty: bool, already_locked: bool = False) -> int:
     with nullcontext() if already_locked else process_lock():
         config = load_config()
@@ -323,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fgbridge")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("setup")
+    sub.add_parser("reauthorize")
     sync_parser = sub.add_parser("sync")
     sync_parser.add_argument("--dry-run", action="store_true")
     sync_parser.add_argument("--confirm-empty", action="store_true")
@@ -333,6 +346,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "setup":
             return setup()
+        if args.command == "reauthorize":
+            return reauthorize()
         if args.command == "sync":
             if args.dry_run and args.confirm_empty:
                 parser.error("--confirm-empty requires a writing sync")

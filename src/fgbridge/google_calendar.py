@@ -53,9 +53,12 @@ class RemoteEvent:
 class _RequestsTransport:
     """Use the same proxy-aware transport as Google OAuth token refresh."""
 
-    def __init__(self, credentials: Credentials, token_path: Path) -> None:
+    def __init__(
+        self, credentials: Credentials, token_path: Path, *, persist_token: bool = True,
+    ) -> None:
         self.session = AuthorizedSession(credentials)
         self.token_path = token_path
+        self.persist_token = persist_token
 
     def request(
         self, uri: str, method: str = "GET", body: Any = None,
@@ -63,7 +66,7 @@ class _RequestsTransport:
     ) -> tuple[Response, bytes]:
         previous_token = self.session.credentials.token
         result = self.session.request(method, uri, data=body, headers=headers, timeout=30)
-        if self.session.credentials.token != previous_token:
+        if self.persist_token and self.session.credentials.token != previous_token:
             atomic_private_write(self.token_path, self.session.credentials.to_json().encode())
         response = Response(dict(result.headers))
         response.status = result.status_code
@@ -72,13 +75,18 @@ class _RequestsTransport:
 
 
 class GoogleCalendar:
-    def __init__(self, credentials: Credentials, token_path: Path) -> None:
+    def __init__(
+        self, credentials: Credentials, token_path: Path, *, persist_token: bool = True,
+    ) -> None:
         if not credentials.has_scopes([SCOPE]):
             raise GoogleError("google_missing_scope")
         self.credentials = credentials
         self.token_path = token_path
+        self.persist_token = persist_token
         self.service = build(
-            "calendar", "v3", http=_RequestsTransport(credentials, token_path), cache_discovery=False
+            "calendar", "v3",
+            http=_RequestsTransport(credentials, token_path, persist_token=persist_token),
+            cache_discovery=False,
         )
 
     @classmethod
@@ -107,6 +115,22 @@ class GoogleCalendar:
             atomic_private_write(token_path, credentials.to_json().encode())
         return cls(credentials, token_path)
 
+    @classmethod
+    def reauthorize(
+        cls, client_json: Path, calendar_id: str, install_id: str,
+    ) -> GoogleCalendar:
+        token_path = home() / "token.json"
+        if token_path.is_symlink():
+            raise GoogleError("google_token_symlink")
+        flow = InstalledAppFlow.from_client_secrets_file(str(client_json), scopes=[SCOPE])
+        credentials = flow.run_local_server(port=0, open_browser=True, prompt="consent")
+        if not credentials.refresh_token:
+            raise GoogleError("google_refresh_token_missing")
+        google = cls(credentials, token_path, persist_token=False)
+        google.assert_calendar(calendar_id, install_id)
+        atomic_private_write(token_path, credentials.to_json().encode())
+        return cls(credentials, token_path)
+
     def _execute(self, request: Any) -> Any:
         refreshed = False
         for attempt in range(4):
@@ -119,7 +143,10 @@ class GoogleCalendar:
                     refreshed = True
                     try:
                         self.credentials.refresh(Request())
-                        atomic_private_write(self.token_path, self.credentials.to_json().encode())
+                        if self.persist_token:
+                            atomic_private_write(
+                                self.token_path, self.credentials.to_json().encode()
+                            )
                     except RefreshError as refresh_exc:
                         raise GoogleError("google_needs_auth", status) from refresh_exc
                     continue

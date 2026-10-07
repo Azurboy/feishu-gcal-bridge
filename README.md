@@ -55,7 +55,7 @@ Google 副本不会回写飞书。获授权读取该 Google 账号日历的其�
 3. **Mac：**安装 Python 3.12+ 和 [uv](https://docs.astral.sh/uv/)；也可用 `python3 -m venv` 和 `pip install -e .`。
 
 > [!IMPORTANT]
-> 若 Google OAuth 同意屏幕仍为 **External / Testing**，带日历权限的 refresh token 通常约 7 天到期。当前真实账号仍处于 Testing；长期使用需按 Google 政策处理发布状态并重新验证。Production 状态也不等于审核通过或 token 永不失效。[Google token 生命周期](https://developers.google.com/identity/protocols/oauth2)
+> 若 Google OAuth 同意屏幕保持 **External / Testing**，带日历权限的 refresh token 通常约 7 天到期；当前真实账号已出现 `google_needs_auth`。可以继续保留 Testing，不必发布应用，但需要定期在浏览器重新授权。[Google token 生命周期](https://developers.google.com/identity/protocols/oauth2)
 
 ### 2. 安装并授权
 
@@ -80,6 +80,16 @@ uv run fgbridge schedule install # 当前 Mac 用户登录期间，每 120 秒�
 
 需要手动触发时运行 `uv run fgbridge sync`。`status` 距上次完整成功超过 10 分钟会提示陈旧。`--dry-run` 不推进“连续两次缺失”的删除计数。
 
+### Google 授权到期
+
+保持 OAuth 应用在 Testing 时，约每 7 天需要在浏览器重新授权一次。为避免同步中断，可以提前运行：
+
+```sh
+uv run fgbridge reauthorize
+```
+
+这个命令只更新 Google 授权，先确认仍能访问原有的专用附加日历，再保存新 token 并立即同步；不重配飞书凭据或新建日历。授权需要在浏览器中选回原来的 Gmail 账号并同意，无法通过后台任务自动完成。完成后运行 `uv run fgbridge status` 检查是否恢复 `ok`。
+
 若源突然从非空变为全空，先确认飞书日历和 CalDAV 确实返回空窗口，再运行 `uv run fgbridge sync --confirm-empty`；不要仅凭一次空结果清空 Google 副本。
 
 ## 停用与数据位置
@@ -90,9 +100,9 @@ uv run fgbridge schedule install # 当前 Mac 用户登录期间，每 120 秒�
 
 ## 验收进度
 
-**已经验证：**33 项合成测试；个人飞书与 Gmail 首次同步时，窗口内 26 个实例写入并从 Google API 读回；无参会人的合成日程新增、改期、删除；重复运行 `setup` 后来源、安装身份和目标日历均保持不变。Mac `launchd` 正在运行。
+**已经验证：**35 项合成测试；个人飞书与 Gmail 首次同步时，窗口内 26 个实例写入并从 Google API 读回；无参会人的合成日程新增、改期、删除；重复运行 `setup` 后来源、安装身份和目标日历均保持不变。Mac `launchd` 正在运行。
 
-**仍需验证：**飞书 UI 中重复日程“仅此/此后/全部”、真实私密标记、至少 20 次时效测量、休眠恢复，以及连续 8 天运行与 Google Testing token 的到期行为。因此暂不宣称稳定的同步时效或适用于所有飞书租户。
+**仍需验证：**飞书 UI 中重复日程“仅此/此后/全部”、真实私密标记、至少 20 次时效测量、休眠后的源变化补齐，以及重新授权后的恢复。Google Testing token 已在约第 7 天失效，因此 8 天连续成功尚未通过；暂不宣称稳定的同步时效或适用于所有飞书租户。
 
 ```sh
 uv sync --locked --extra dev
